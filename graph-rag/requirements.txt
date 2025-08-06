@@ -1,0 +1,7 @@
+neo4j
+faiss.cpu
+google-generativeai
+pypdf
+numpy
+python-dotenv
+llama-cpp-python
