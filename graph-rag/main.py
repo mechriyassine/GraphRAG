@@ -103,15 +103,142 @@ def chunk_text(text, chunk_size=512):
 #     return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
 
 # 6. Embedding + FAISS index
-# def get_embeddings(texts):
-#     """Get embeddings for a list of texts using the Gemini API."""
-#     try:
-#         response = model.generate_embeddings(texts)
-#         return [embedding.vector for embedding in response.embeddings]
-#     except Exception as e:
-#         print(f"Error generating embeddings: {e}")
-#         return []
-    
+    #  Chunking (keep as is or adapt)
+def chunk_text(text, chunk_size=512):
+    """Chunk text into smaller pieces for FAISS indexing."""
+    return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
+
+    # Batch embedding function
 def get_embeddings(texts):
-    embed = genai.embed_content(model="models/embedding-011",content=text)
-    return embed["embedding"]
+    """Get embeddings for a list of texts (batch) using the Gemini API."""
+    try:
+        response = model.generate_embeddings(texts)  # batch embedding call
+        return [embedding.vector for embedding in response.embeddings]
+    except Exception as e:
+        print(f"Error generating embeddings: {e}")
+        return []
+
+    # Create FAISS index with batch embeddings
+def create_faiss_index(chunks):
+    """Create a FAISS index for semantic search."""
+    embeddings = get_embeddings(chunks)  # Get embeddings for all chunks at once
+    if not embeddings:
+        raise ValueError("No embeddings generated.")
+    
+    embeddings_np = np.array(embeddings).astype('float32')
+    dimension = embeddings_np.shape[1]
+    
+    index = faiss.IndexFlatL2(dimension)  # L2 distance for similarity
+    index.add(embeddings_np)  # Add all embeddings to the index
+    print(f"Added {index.ntotal} chunks to FAISS index.")
+    
+    return index, dimension
+
+    #  Search using FAISS
+def search_vector(query, index, chunks, k=3):
+    """Find most relevant text chunks for a query using FAISS."""
+    query_embedding = get_embeddings([query])  # Embed query as a batch of one
+    if not query_embedding:
+        return []
+    
+    query_vector = np.array(query_embedding).astype('float32')
+    D, I = index.search(query_vector, k)  # Search top k nearest neighbors
+    return [chunks[i] for i in I[0]]
+
+    
+# def get_embeddings(texts):
+#     embed = genai.embed_content(model="models/embedding-011",content=text)
+#     return embed["embedding"]
+# def create_faiss_index(chunks):
+#     """Create a FAISS index for semantic search."""
+#     embeddings = np.array([get_embeddings(chunk) for chunk in chunks]).astype('float32')
+#     dimension = embeddings.shape[1]
+    
+#     index = faiss.IndexFlatL2(dimension)  # L2 distance for similarity
+#     index.add(embeddings)  # Add embeddings to the index
+#     print(f"Added {index.ntotal} chunks to FAISS index.")
+    
+#     return index,dimension
+
+# def search_vector(query, index, chunks, k=3):
+#     """Find most relevant text chunks for a query using FAISS."""
+#     query_vector = np.array([get_embeddings(query)]).astype('float32')
+#     D, I = index.search(query_vector, k)  # Search for k nearest neighbors
+#     return [chunks[i] for i in I[0]]
+
+# 7. Graph Query Helpers
+def query_graph(query, params=None):
+    """Run a Cypher query on the Neo4j database."""
+    with driver.session() as session:
+        result = session.run(query, params or {})
+        return [record.data() for record in result]
+    
+def debug_relationships ():
+    """Print all relationships in graph inspection."""
+    with driver.session() as session:
+        result = session.run("MATCH (n)-[r]->(m) RETURN n.name AS source, type(r) AS relation, m.name ORDER BY n.name")
+        relationships = [record.data() for record in result]
+        
+        print(" DEBUG: Relationships in the graph:")
+        for rel in relationships:
+            print(f"{rel['n.name']} -[{rel['relation']}]-> {rel['m.name']}")
+        return relationships
+
+# 8. GraphRag answer generation
+
+def graph_rag_answer(question, index, chunks):
+    """
+    Combines semantic search + graph relationships + LLM to generate an answer.
+    """
+    # step 1 : Semantic context
+    vector_context = "\n".join(search_vector(question, index, chunks))
+    
+    # step 2 : Pull a ll relationships
+    graph_data= query_graph("MATCH (n)-[r]->(m) RETURN n.name, type(r) AS relation, m.name LIMIT 50")
+    graph_context = "\n".join([f"{row['n.name']} -[{row['relation']}]-> {row['m.name']}" for row in graph_data])
+    
+    # step 3 : Combine contexts
+    prompt = f"""
+    Use the following graph relationships + context to answer the question:
+    
+    Context:
+    {vector_context}
+    
+    Graph:
+    {graph_context}
+    
+    Question: {question}
+    """
+    
+    response = genai.GenerativeModel("gemini-2.5-flash").generate_content(prompt)
+    return response.text.strip()
+
+# Main pipeline
+def main():
+    # 1. Test Neo4j connection
+    test_connection ()
+    
+    # 2. Ingest sample text (replace with real_pdf() for real docs)
+    sample_text ="""
+    Mohamed manages Ali, who works under Fatima.
+    Ali assists Fatima in her projects.
+    Fatima supervises both Mohamed and Ali.
+    """
+    # 3. Extract relationships
+    relations = extract_relationships(sample_text)
+    for rel in relations:
+        add_relationships(rel['person'], rel['relation'], rel['target'])
+        
+    # 4. Build FAISS index
+    chunks = chunk_text(sample_text)
+    index, dimension = create_faiss_index(chunks)
+    
+    # 5. Debug graph
+    debug_relationships()
+    
+    # 6. Ask a question
+    answer = graph_rag_answer("Who manages Ali?", index, chunks)
+    print(f"Answer: {answer}")
+    
+if __name__ == "__main__":
+    main() # Close Neo4j driver connection
