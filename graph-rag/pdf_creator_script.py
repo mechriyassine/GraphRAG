@@ -285,4 +285,4 @@ if __name__ == "__main__":
             create_simple_text_pdfs()
         except ImportError:
             print("❌ Cannot create PDFs - reportlab not available")
-            print("🔧 Install reportlab first: pip install reportlab")
+            print("🔧 Install reportlab first: pip install reportlab") 
